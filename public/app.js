@@ -77,13 +77,13 @@ function confirm(msg) {
   return new Promise(resolve => {
     const overlay = document.getElementById('modal-overlay');
     document.getElementById('modal-msg').textContent = msg;
-    overlay.hidden = false;
+    overlay.classList.add('active');
 
     const ok  = document.getElementById('modal-confirm');
     const no  = document.getElementById('modal-cancel');
 
     function cleanup(val) {
-      overlay.hidden = true;
+      overlay.classList.remove('active');
       ok.onclick = null;
       no.onclick = null;
       resolve(val);
