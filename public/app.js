@@ -256,13 +256,13 @@ function render() {
   const app = document.getElementById('app');
 
   if (!S.user) {
-    // Wipe everything and show login
     app.innerHTML = '';
     renderLogin();
     return;
   }
 
-  // First time entering the app after login — build the shell
+  // First time entering the app after login — build the shell.
+  // Bottom nav (#bottom-nav) is positioned fixed and lives outside #main-view.
   if (!document.getElementById('navbar')) {
     app.innerHTML = `
       <nav id="navbar"></nav>
@@ -270,10 +270,12 @@ function render() {
         <aside id="sidebar"></aside>
         <main  id="content"></main>
       </div>
+      <nav id="bottom-nav"><div class="bnav-inner"></div></nav>
     `;
   }
 
   renderNav();
+  renderBottomNav();
   renderSidebar();
   renderMainContent();
 }
@@ -282,6 +284,36 @@ function render() {
 function renderMainContent() {
   if (S.view === 'scheduler') renderScheduler();
   else                        renderAdmin();
+}
+
+/**
+ * Bottom navigation bar — shown only on mobile via CSS.
+ * Mirrors the top nav tabs so touch users have a thumb-reachable switch.
+ */
+function renderBottomNav() {
+  const inner = document.querySelector('#bottom-nav .bnav-inner');
+  if (!inner) return;
+
+  const tabs = [{ view: 'scheduler', icon: '📅', label: 'Book' }];
+  if (S.user?.role === 'admin') tabs.push({ view: 'admin', icon: '⚙️', label: 'Admin' });
+
+  inner.innerHTML = tabs.map(t => `
+    <button class="bnav-btn ${S.view === t.view ? 'active' : ''}" data-view="${t.view}">
+      <span class="bnav-icon">${t.icon}</span>
+      <span>${t.label}</span>
+      <span class="bnav-dot"></span>
+    </button>
+  `).join('');
+
+  inner.querySelectorAll('[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      S.view = btn.dataset.view;
+      if (S.view === 'admin') loadAdminData();
+      renderNav();
+      renderBottomNav();
+      renderMainContent();
+    });
+  });
 }
 
 
@@ -438,18 +470,18 @@ function renderSidebar() {
 
     <!-- Quick stats -->
     <div>
-      <div class="sidebar-section-title">Selected Date</div>
+      <div class="section-label">Selected Date</div>
       <div class="stat-row">
         <span>My bookings</span>
-        <span class="stat-badge">${myCount}</span>
+        <span class="stat-chip">${myCount}</span>
       </div>
       <div class="stat-row">
         <span>All booked</span>
-        <span class="stat-badge">${totalBooked}</span>
+        <span class="stat-chip">${totalBooked}</span>
       </div>
       <div class="stat-row">
         <span>Available</span>
-        <span class="stat-badge">${totalSlots - totalBooked}</span>
+        <span class="stat-chip">${totalSlots - totalBooked}</span>
       </div>
     </div>
   `;
@@ -578,14 +610,18 @@ function renderScheduler() {
         const av        = escHtml(initials(booking.user_name));
         const name      = escHtml(booking.user_name);
         return `
-          <div class="sched-slot ${cls}" data-id="${booking.id}"
-               title="${canCancel ? 'Click to cancel' : name}">
+          <div class="sched-slot ${cls}" data-id="${booking.id}">
             <div class="slot-pill">
               <div class="slot-avatar">${av}</div>
               <div class="slot-info">
                 <div class="slot-name">${name}</div>
-                ${canCancel ? '<div class="slot-hint">Cancel booking</div>' : ''}
               </div>
+              ${canCancel
+                // Cancel button is always rendered; CSS controls visibility per device type.
+                // On touch (hover:none) it's always visible.
+                // On mouse (hover:hover) it fades in on slot hover.
+                ? `<button class="slot-cancel" title="Cancel booking" aria-label="Cancel booking">✕</button>`
+                : ''}
             </div>
           </div>`;
       }
@@ -661,11 +697,16 @@ function renderScheduler() {
   });
 
   // ── Grid: event delegation ────────────────────────────────────────────────
-  // ONE click listener on the entire grid catches all slot interactions.
-  // This is reliable regardless of how/when slots are rendered.
-  document.getElementById('sched-grid').addEventListener('click', async e => {
-    const slot = e.target.closest('.sched-slot');
-    if (!slot) return; // click was on a non-slot area (header, time label)
+  // One listener on the grid handles all slot and button clicks.
+  const grid = document.getElementById('sched-grid');
+
+  grid.addEventListener('click', async e => {
+    // If user tapped the cancel button specifically, handle cancel directly.
+    // stopPropagation is NOT used — we let it bubble and also match the slot below,
+    // but we exit early from the 'mine' handler if it came from the cancel btn.
+    const cancelBtn = e.target.closest('.slot-cancel');
+    const slot      = e.target.closest('.sched-slot');
+    if (!slot) return;
 
     // ── Book an available slot ────────────────────────────────────────────
     if (slot.classList.contains('available')) {
@@ -690,7 +731,9 @@ function renderScheduler() {
       }
     }
 
-    // ── Cancel a booking (own, or admin cancelling any) ───────────────────
+    // ── Cancel a booking ──────────────────────────────────────────────────
+    // On touch: fires when user taps the always-visible ✕ button.
+    // On desktop: fires when user clicks the slot or the ✕ (shown on hover).
     if (slot.classList.contains('mine')) {
       const id      = parseInt(slot.dataset.id, 10);
       const booking = S.bookings.find(b => b.id === id);
@@ -713,6 +756,28 @@ function renderScheduler() {
       }
     }
   });
+
+  // ── Swipe left/right to change day (touch devices) ───────────────────────
+  // Uses the scheduler wrapper (not the grid) so horizontal grid scroll
+  // doesn't conflict — only a fast horizontal swipe changes the day.
+  const wrap = content.querySelector('.scheduler-wrap');
+  let swipeStartX = 0;
+  let swipeStartY = 0;
+
+  wrap.addEventListener('touchstart', e => {
+    swipeStartX = e.changedTouches[0].clientX;
+    swipeStartY = e.changedTouches[0].clientY;
+  }, { passive: true });
+
+  wrap.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - swipeStartX;
+    const dy = e.changedTouches[0].clientY - swipeStartY;
+    // Only trigger if horizontal motion dominates (not a vertical scroll)
+    // and the swipe is at least 60px
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      shiftDay(dx < 0 ? 1 : -1);
+    }
+  }, { passive: true });
 }
 
 /** Navigates the scheduler by `delta` days (±1). */
