@@ -107,11 +107,24 @@ applyTheme();
 
 // ── Router / Root render ─────────────────────────────────────────────────────
 function render() {
+  const app = document.getElementById('app');
   if (!S.user) {
+    app.innerHTML = '';
     renderLogin();
   } else {
+    // Full rebuild when first entering the app (coming from login)
+    if (!document.getElementById('navbar')) {
+      app.innerHTML = `
+        <nav id="navbar"></nav>
+        <div id="main-view">
+          <aside id="sidebar"></aside>
+          <main id="content"></main>
+        </div>
+      `;
+    }
     renderNav();
-    renderMain();
+    renderSidebar();
+    renderMainContent();
   }
 }
 
@@ -174,9 +187,8 @@ function renderLogin() {
 
 // ── Nav ──────────────────────────────────────────────────────────────────────
 function renderNav() {
-  const existing = document.getElementById('navbar');
-  const nav = existing || document.createElement('nav');
-  nav.id = 'navbar';
+  const nav = document.getElementById('navbar');
+  if (!nav) return;
 
   nav.innerHTML = `
     <div class="nav-logo">
@@ -190,8 +202,6 @@ function renderNav() {
     <button class="btn-icon" id="dark-toggle" title="Toggle dark mode">${S.darkMode ? '☀️' : '🌙'}</button>
     <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
   `;
-
-  if (!existing) document.getElementById('app').prepend(nav);
 
   nav.querySelectorAll('[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -209,21 +219,6 @@ function renderNav() {
     S.user = null; S.bookings = [];
     render();
   });
-}
-
-// ── Main layout ──────────────────────────────────────────────────────────────
-function renderMain() {
-  const app = document.getElementById('app');
-  if (!document.getElementById('main-view')) {
-    app.innerHTML += `
-      <div id="main-view">
-        <aside id="sidebar"></aside>
-        <main id="content"></main>
-      </div>
-    `;
-  }
-  renderSidebar();
-  renderMainContent();
 }
 
 function renderMainContent() {
