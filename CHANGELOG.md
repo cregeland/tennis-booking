@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.0] - 2026-03-05
+### Changed
+- **Home Assistant-style UI redesign** — replaced horizontal top navbar with a
+  fixed left navigation sidebar (logo, nav items, user card, dark mode toggle,
+  sign-out button), matching HA's familiar panel layout
+- Added sticky topbar with page title (left) and user profile chip (right)
+  showing name + role with an avatar initials circle
+- Mini-calendar sidebar preserved as secondary right panel within main view
+- Mobile layout unchanged: left nav hidden, bottom nav and topbar remain
+
+---
+
+## [1.2.0] - 2026-03-05
+### Added
+- **Real-time updates via WebSocket** — bookings made by any user appear instantly
+  for all connected clients without a page refresh
+- **Admin user management** — create, edit (name/email/role/password), and delete users
+  directly from the Admin panel; guards prevent deleting the last admin or yourself
+- WebSocket connection status shown on the System Info page ("● Live" / "○ Offline")
+- Live WebSocket client count shown in System Info server stats
+
+### Fixed
+- Safari date parsing bug: SQLite `DATETIME` strings (space separator) now parsed
+  with a `T` replacement to conform to ISO 8601 — fixes "Invalid Date" / validation
+  errors on the Info page and admin users table in Safari/iOS
+- Info page error state now shows a Retry button instead of requiring a full refresh
+- `apiFetch` now catches non-JSON responses and reports `Server error (status)` instead
+  of a cryptic JSON parse exception ("The string did not match the expected pattern")
+
+---
+
 ## [1.1.0] - 2026-03-05
 ### Added
 - CHANGELOG.md for version tracking

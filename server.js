@@ -5,6 +5,7 @@ const { WebSocketServer } = require('ws');
 const Database    = require('better-sqlite3');
 const bcrypt      = require('bcryptjs');
 const jwt         = require('jsonwebtoken');
+const crypto      = require('crypto');
 const helmet      = require('helmet');
 const rateLimit   = require('express-rate-limit');
 const cookieParser= require('cookie-parser');
@@ -167,6 +168,28 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+/** HMAC-based calendar token — lets the iPad Calendar app subscribe without cookies. */
+function calToken(userId) {
+  return crypto.createHmac('sha256', JWT_SECRET + ':cal').update(String(userId)).digest('base64url');
+}
+
+/** Auth for ICS endpoints: accepts cookie JWT or ?uid=&token= query params. */
+function authenticateCal(req, res, next) {
+  const cookie = req.cookies.token;
+  if (cookie) {
+    try { req.user = jwt.verify(cookie, JWT_SECRET); return next(); } catch {}
+  }
+  const { uid, token } = req.query;
+  if (uid && token) {
+    const userId = parseInt(uid, 10);
+    if (!isNaN(userId) && token === calToken(userId)) {
+      const user = db.prepare('SELECT id, name, email, role FROM users WHERE id=?').get(userId);
+      if (user) { req.user = user; return next(); }
+    }
+  }
+  res.status(401).json({ error: 'Not authenticated' });
+}
+
 function isValidDate(d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d)); }
 
 // ── Auth Routes ───────────────────────────────────────────────────────────────
@@ -206,6 +229,47 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/me', authenticate, (req, res) => {
   res.json({ id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role });
+});
+
+app.put('/api/me', authenticate, async (req, res) => {
+  try {
+    const { name, email, password } = req.body ?? {};
+    if (!name || typeof name !== 'string' || !name.trim())
+      return res.status(400).json({ error: 'Name required' });
+    if (!email || typeof email !== 'string' || !email.includes('@'))
+      return res.status(400).json({ error: 'Valid email required' });
+
+    const emailLower = email.toLowerCase().trim();
+    const conflict = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(emailLower, req.user.id);
+    if (conflict) return res.status(409).json({ error: 'Email already in use' });
+
+    if (password) {
+      if (typeof password !== 'string' || password.length < 8)
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      db.prepare('UPDATE users SET name=?, email=?, password_hash=? WHERE id=?')
+        .run(name.trim(), emailLower, hash, req.user.id);
+    } else {
+      db.prepare('UPDATE users SET name=?, email=? WHERE id=?')
+        .run(name.trim(), emailLower, req.user.id);
+    }
+
+    const updated = db.prepare('SELECT id, name, email, role FROM users WHERE id=?').get(req.user.id);
+    const token = jwt.sign(
+      { id: updated.id, name: updated.name, email: updated.email, role: updated.role },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    res.cookie('token', token, {
+      httpOnly: true, sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000,
+    });
+    res.json({ id: updated.id, name: updated.name, email: updated.email, role: updated.role });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ── Courts ────────────────────────────────────────────────────────────────────
@@ -404,7 +468,16 @@ function buildICS(bookings, calName) {
   ].join('\r\n');
 }
 
-app.get('/api/calendar/mine.ics', authenticate, (req, res) => {
+app.get('/api/calendar-links', authenticate, (req, res) => {
+  const token = calToken(req.user.id);
+  const base  = `${req.protocol}://${req.get('host')}`;
+  const links = { mine: `${base}/api/calendar/mine.ics?uid=${req.user.id}&token=${token}` };
+  if (req.user.role === 'admin')
+    links.all = `${base}/api/calendar/all.ics?uid=${req.user.id}&token=${token}`;
+  res.json(links);
+});
+
+app.get('/api/calendar/mine.ics', authenticateCal, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare(`
     SELECT b.id, b.date, b.start_hour, b.end_hour,
@@ -419,7 +492,7 @@ app.get('/api/calendar/mine.ics', authenticate, (req, res) => {
   res.send(buildICS(rows, `${req.user.name} – Tennisbane`));
 });
 
-app.get('/api/calendar/all.ics', authenticate, requireAdmin, (req, res) => {
+app.get('/api/calendar/all.ics', authenticateCal, requireAdmin, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare(`
     SELECT b.id, b.date, b.start_hour, b.end_hour,

@@ -1,5 +1,5 @@
 /**
- * TennisPro Booking — Frontend Application  v1.2.0
+ * TennisPro Booking — Frontend Application  v1.3.0
  *
  * Architecture: single-page app, no framework.
  * State is mutated in the `S` object; render functions read from it and
@@ -131,6 +131,8 @@ const api = {
   login:   (email, password) => apiFetch('/api/login',  { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout:  ()                => apiFetch('/api/logout',  { method: 'POST' }),
   me:      ()                => apiFetch('/api/me'),
+  updateMe:      (data) => apiFetch('/api/me', { method: 'PUT', body: JSON.stringify(data) }),
+  calendarLinks: ()    => apiFetch('/api/calendar-links'),
 
   // Data
   courts:  ()                             => apiFetch('/api/courts'),
@@ -336,14 +338,47 @@ const EditModal = (() => {
 
 // ── 6c. Calendar Export ──────────────────────────────────────────────────────
 
-function exportCalendar(adminAll = false) {
-  const url = adminAll ? '/api/calendar/all.ics' : '/api/calendar/mine.ics';
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = adminAll ? 'alle-bestillinger.ics' : 'mine-bestillinger.ics';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+async function exportCalendar(adminAll = false) {
+  let links;
+  try { links = await api.calendarLinks(); }
+  catch (err) { toast(err.message, 'error'); return; }
+
+  const url     = adminAll ? links.all : links.mine;
+  const webcal  = url.replace(/^https?:/, 'webcal:');
+  const filename = adminAll ? 'alle-bestillinger.ics' : 'mine-bestillinger.ics';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:460px;width:100%">
+      <h3 style="margin:0 0 .5rem">📅 Calendar Export</h3>
+      <p style="font-size:.85rem;color:var(--text2);margin-bottom:1rem">
+        Subscribe in the Calendar app to get live updates, or download a one-time file.
+      </p>
+
+      <label style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3)">Subscription URL</label>
+      <div style="display:flex;gap:.4rem;margin:.35rem 0 1rem">
+        <input class="form-input" id="cal-url-input" readonly value="${escHtml(url)}" style="font-size:.78rem;min-height:38px">
+        <button class="btn btn-ghost" id="cal-copy-btn" style="flex-shrink:0">Copy</button>
+      </div>
+
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end">
+        <button class="btn btn-ghost" id="cal-cancel-btn">Close</button>
+        <a class="btn btn-ghost" href="${escHtml(webcal)}">📱 Subscribe (iOS/macOS)</a>
+        <a class="btn btn-primary" href="${escHtml(url)}" download="${filename}">⬇ Download .ics</a>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('#cal-cancel-btn').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#cal-copy-btn').addEventListener('click', () => {
+    navigator.clipboard.writeText(url).then(() => {
+      overlay.querySelector('#cal-copy-btn').textContent = 'Copied!';
+      setTimeout(() => overlay.remove(), 1200);
+    });
+  });
 }
 
 
@@ -375,20 +410,22 @@ function render() {
     return;
   }
 
-  if (!document.getElementById('navbar')) {
+  if (!document.getElementById('ha-nav')) {
     app.innerHTML = `
-      <nav id="navbar"></nav>
-      <div id="main-view">
-        <aside id="sidebar"></aside>
-        <main  id="content"></main>
+      <nav id="ha-nav"></nav>
+      <div id="ha-body">
+        <div id="ha-topbar"></div>
+        <div id="main-view">
+          <main id="content"></main>
+        </div>
       </div>
       <nav id="bottom-nav"><div class="bnav-inner"></div></nav>
     `;
   }
 
   renderNav();
+  renderTopbar();
   renderBottomNav();
-  renderSidebar();
   renderMainContent();
 }
 
@@ -425,6 +462,7 @@ function renderBottomNav() {
       if (S.view === 'sysinfo')    loadSysInfo();
       if (S.view === 'mybookings') loadMyBookings();
       renderNav();
+      renderTopbar();
       renderBottomNav();
       renderMainContent();
     });
@@ -506,43 +544,40 @@ function renderLogin() {
 }
 
 
-// ── 10. Navigation Bar ───────────────────────────────────────────────────────
+// ── 10. Navigation (HA-style left sidebar + topbar) ──────────────────────────
 
 function renderNav() {
-  const nav = document.getElementById('navbar');
+  const nav = document.getElementById('ha-nav');
   if (!nav) return;
 
   const isAdmin = S.user?.role === 'admin';
 
+  const tabs = [
+    { view: 'scheduler',  icon: '📅', label: 'Book Courts' },
+    { view: 'mybookings', icon: '🎾', label: 'My Bookings' },
+  ];
+  if (isAdmin) tabs.push({ view: 'admin',   icon: '⚙️', label: 'Admin' });
+  tabs.push(  { view: 'sysinfo', icon: 'ℹ️', label: 'System Info' });
+
   nav.innerHTML = `
-    <div class="nav-logo">
+    <div class="ha-nav-logo">
       <div class="logo-icon">🎾</div>
-      <span>TennisPro</span>
+      <div class="ha-nav-logo-text">
+        <h1>TennisPro</h1>
+        <p>Court Booking</p>
+      </div>
     </div>
 
-    <div class="nav-divider"></div>
+    <div class="ha-nav-items">
+      <div class="ha-nav-section">Navigation</div>
+      ${tabs.map(t => `
+        <button class="ha-nav-item ${S.view === t.view ? 'active' : ''}" data-view="${t.view}">
+          <span class="ha-nav-icon">${t.icon}</span>
+          <span>${t.label}</span>
+        </button>
+      `).join('')}
+    </div>
 
-    <button class="nav-tab ${S.view === 'scheduler' ? 'active' : ''}" data-view="scheduler">
-      📅 Book Courts
-    </button>
-    <button class="nav-tab ${S.view === 'mybookings' ? 'active' : ''}" data-view="mybookings">
-      🎾 My Bookings
-    </button>
-    ${isAdmin ? `
-    <button class="nav-tab ${S.view === 'admin' ? 'active' : ''}" data-view="admin">
-      ⚙️ Admin
-    </button>` : ''}
-    <button class="nav-tab ${S.view === 'sysinfo' ? 'active' : ''}" data-view="sysinfo">
-      ℹ️ System
-    </button>
-
-    <span class="nav-user ml-auto">
-      <strong>${escHtml(S.user?.name ?? '')}</strong>
-    </span>
-    <button class="btn-icon" id="dark-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
-      <span id="dark-icon">${S.darkMode ? '☀️' : '🌙'}</span>
-    </button>
-    <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
   `;
 
   nav.querySelectorAll('[data-view]').forEach(btn => {
@@ -552,13 +587,66 @@ function renderNav() {
       if (S.view === 'sysinfo')    loadSysInfo();
       if (S.view === 'mybookings') loadMyBookings();
       renderNav();
+      renderTopbar();
+      renderBottomNav();
       renderMainContent();
     });
   });
+}
 
-  document.getElementById('dark-toggle').addEventListener('click', toggleDark);
+function renderTopbar() {
+  const topbar = document.getElementById('ha-topbar');
+  if (!topbar) return;
 
-  document.getElementById('logout-btn').addEventListener('click', async () => {
+  const titles = {
+    scheduler:  '📅 Book Courts',
+    mybookings: '🎾 My Bookings',
+    admin:      '⚙️ Admin Panel',
+    sysinfo:    'ℹ️ System Info',
+  };
+
+  topbar.innerHTML = `
+    <span class="topbar-title">${titles[S.view] ?? ''}</span>
+    <button class="btn-icon" id="topbar-dark-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">
+      <span id="dark-icon">${S.darkMode ? '☀️' : '🌙'}</span>
+    </button>
+    <div class="topbar-profile-wrap">
+      <button class="topbar-profile" id="topbar-profile-btn" title="Account">
+        <div class="topbar-avatar">${initials(S.user?.name ?? '')}</div>
+        <div>
+          <div class="topbar-user-name">${escHtml(S.user?.name ?? '')}</div>
+          <div class="topbar-user-role">${escHtml(S.user?.role ?? '')}</div>
+        </div>
+        <span style="font-size:.7rem;color:var(--text3);margin-left:.25rem">▾</span>
+      </button>
+      <div class="profile-dropdown hidden" id="profile-dropdown">
+        <button class="profile-dd-item" id="dd-edit-profile">✏️ Edit Profile</button>
+        <div class="profile-dd-divider"></div>
+        <button class="profile-dd-item profile-dd-danger" id="dd-logout">🚪 Sign out</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('topbar-dark-toggle').addEventListener('click', toggleDark);
+
+  const profileBtn = document.getElementById('topbar-profile-btn');
+  const dropdown   = document.getElementById('profile-dropdown');
+
+  profileBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    dropdown.classList.toggle('hidden');
+  });
+
+  document.addEventListener('click', () => dropdown.classList.add('hidden'), { once: false });
+  dropdown.addEventListener('click', e => e.stopPropagation());
+
+  document.getElementById('dd-edit-profile').addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    openProfileModal();
+  });
+
+  document.getElementById('dd-logout').addEventListener('click', async () => {
+    dropdown.classList.add('hidden');
     await api.logout().catch(() => {});
     disconnectWS();
     S.user = null;
@@ -568,32 +656,91 @@ function renderNav() {
   });
 }
 
+function openProfileModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'profile-modal-overlay';
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:420px;width:100%">
+      <h3 style="margin:0 0 1rem">Edit Profile</h3>
+
+      <div id="profile-error" class="login-error hidden" style="margin-bottom:.75rem"></div>
+
+      <div class="form-group" style="margin-bottom:.75rem">
+        <label for="profile-name">Name</label>
+        <input type="text" id="profile-name" value="${escHtml(S.user?.name ?? '')}" autocomplete="name">
+      </div>
+      <div class="form-group" style="margin-bottom:.75rem">
+        <label for="profile-email">Email</label>
+        <input type="email" id="profile-email" value="${escHtml(S.user?.email ?? '')}" autocomplete="email">
+      </div>
+      <div class="form-group" style="margin-bottom:1.25rem">
+        <label for="profile-password">New password <span style="font-weight:400;text-transform:none;color:var(--text3)">(leave blank to keep current)</span></label>
+        <input type="password" id="profile-password" placeholder="Min. 8 characters" autocomplete="new-password">
+      </div>
+
+      <div style="display:flex;gap:.6rem;justify-content:flex-end">
+        <button class="btn btn-ghost" id="profile-cancel">Cancel</button>
+        <button class="btn btn-primary" id="profile-save">Save</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('profile-cancel').addEventListener('click', close);
+
+  document.getElementById('profile-save').addEventListener('click', async () => {
+    const name     = document.getElementById('profile-name').value.trim();
+    const email    = document.getElementById('profile-email').value.trim();
+    const password = document.getElementById('profile-password').value;
+    const errEl    = document.getElementById('profile-error');
+    const saveBtn  = document.getElementById('profile-save');
+
+    errEl.classList.add('hidden');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="loader"></span>';
+
+    try {
+      const updated = await api.updateMe({ name, email, ...(password ? { password } : {}) });
+      S.user = { ...S.user, ...updated };
+      toast('Profile updated');
+      close();
+      renderNav();
+      renderTopbar();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+    }
+  });
+}
+
 
 // ── 11. Sidebar + Mini Calendar ──────────────────────────────────────────────
 
-function renderSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  if (!sidebar) return;
+/** Renders the inline mini-calendar panel inside #sched-cal-panel (scheduler view only). */
+function renderInlineCal() {
+  const panel = document.getElementById('sched-cal-panel');
+  if (!panel) return;
 
   const myCount     = S.bookings.filter(b => b.user_id === S.user.id).length;
   const totalBooked = S.bookings.length;
   const totalSlots  = S.courts.length * HOURS.length;
 
-  sidebar.innerHTML = `
-    <div class="mini-cal" id="mini-cal"></div>
-    <div>
-      <div class="section-label">Selected Date</div>
-      <div class="stat-row">
-        <span>My bookings</span>
-        <span class="stat-chip">${myCount}</span>
-      </div>
-      <div class="stat-row">
-        <span>All booked</span>
-        <span class="stat-chip">${totalBooked}</span>
-      </div>
-      <div class="stat-row">
-        <span>Available</span>
-        <span class="stat-chip">${totalSlots - totalBooked}</span>
+  panel.innerHTML = `
+    <div class="inline-cal-wrap">
+      <div class="mini-cal" id="mini-cal"></div>
+      <div class="inline-cal-stats">
+        <div class="stat-row"><span>My bookings</span><span class="stat-chip">${myCount}</span></div>
+        <div class="stat-row"><span>All booked</span><span class="stat-chip">${totalBooked}</span></div>
+        <div class="stat-row"><span>Available</span><span class="stat-chip">${totalSlots - totalBooked}</span></div>
       </div>
     </div>
   `;
@@ -658,7 +805,7 @@ function renderMyBookings() {
         toast('Booking cancelled');
         await loadMyBookings();
         await loadBookings();
-        renderSidebar();
+  
       } catch (err) { toast(err.message, 'error'); }
     });
   });
@@ -713,7 +860,7 @@ function renderMiniCal() {
     btn.addEventListener('click', async () => {
       S.selDate = btn.dataset.date;
       await loadBookings();
-      renderSidebar();
+
       renderScheduler();
     });
   });
@@ -797,6 +944,7 @@ function renderScheduler() {
         <button class="btn-icon" id="prev-day" title="Previous day">‹</button>
         <h2>${escHtml(dateLabel)}</h2>
         <button class="btn-icon" id="next-day" title="Next day">›</button>
+        <button class="btn btn-ghost btn-sm" id="toggle-cal" title="Pick date">📅</button>
       </div>
 
       <div class="legend">
@@ -811,6 +959,8 @@ function renderScheduler() {
         ${S.user?.role === 'admin' ? `<button class="btn btn-ghost btn-sm" id="export-cal-all" title="Export all bookings">📅 All</button>` : ''}
       </div>
     </div>
+
+    <div id="sched-cal-panel" class="sched-cal-panel hidden"></div>
 
     <div class="scheduler-wrap">
       <div class="scheduler-grid" id="sched-grid">
@@ -827,8 +977,14 @@ function renderScheduler() {
     S.selDate = todayStr();
     S.calDate = new Date();
     await loadBookings();
-    renderSidebar();
     renderScheduler();
+  });
+
+  document.getElementById('toggle-cal').addEventListener('click', () => {
+    const panel = document.getElementById('sched-cal-panel');
+    if (!panel) return;
+    const isNowVisible = !panel.classList.toggle('hidden');
+    if (isNowVisible) renderInlineCal();
   });
 
   document.getElementById('export-cal').addEventListener('click', () => exportCalendar(false));
@@ -865,7 +1021,7 @@ function renderScheduler() {
         await api.book(courtId, S.selDate, hour);
         toast(`Booked ${court?.name} at ${fmtHour(hour)}`);
         await loadBookings();
-        renderSidebar();
+  
         renderScheduler();
       } catch (err) {
         toast(err.message, 'error');
@@ -898,7 +1054,7 @@ function renderScheduler() {
       }
 
       await loadBookings();
-      renderSidebar();
+
       renderScheduler();
     }
   });
@@ -926,7 +1082,7 @@ async function shiftDay(delta) {
   S.selDate = fmtDate(d);
   S.calDate = new Date(d.getFullYear(), d.getMonth(), 1);
   await loadBookings();
-  renderSidebar();
+
   renderScheduler();
 }
 
@@ -1024,12 +1180,11 @@ function renderAdmin() {
       renderAdmin();
     });
     content.querySelector('#rf-print-daily').addEventListener('click', async () => {
-      // Fetch today's data for selected court then print
-      const courtId = parseInt(content.querySelector('#rf-court').value, 10) || null;
-      const today = todayStr();
+      const courtId   = parseInt(content.querySelector('#rf-court').value, 10) || null;
+      const printDate = content.querySelector('#rf-print-date').value || todayStr();
       try {
-        S.reportData = await api.reports({ court_id: courtId || '', date_from: today, date_to: today });
-        printDailySchedule(courtId);
+        const data = await api.reports({ court_id: courtId || '', date_from: printDate, date_to: printDate });
+        printDailySchedule(courtId, printDate, data);
       } catch (err) { toast(err.message, 'error'); }
     });
   }
@@ -1061,7 +1216,7 @@ function renderAdmin() {
         toast('Booking cancelled');
         await loadAdminData();
         await loadBookings();
-        renderSidebar();
+  
       } catch (err) { toast(err.message, 'error'); }
     });
   });
@@ -1210,9 +1365,12 @@ function buildReportsTab() {
           <button class="btn btn-primary" id="rf-search">Search</button>
         </div>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.5rem">
+      <div style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;align-items:center;margin-top:.5rem">
         <button class="btn btn-ghost btn-sm" id="rf-reset">Reset</button>
-        <button class="btn btn-ghost btn-sm" id="rf-print-daily" title="Print today's schedule for selected court">🖨 Print daily schedule</button>
+        <div style="display:flex;align-items:center;gap:.35rem">
+          <input type="date" id="rf-print-date" class="form-input" value="${todayStr()}" style="min-height:34px;font-size:.85rem;padding:.3rem .6rem;width:auto">
+          <button class="btn btn-ghost btn-sm" id="rf-print-daily" title="Print daily schedule for selected date and court">🖨 Print daily schedule</button>
+        </div>
       </div>
     </div>
     <div class="report-summary" id="report-summary" style="margin:.5rem 0;color:var(--text2);font-size:.85rem">
@@ -1228,10 +1386,10 @@ function buildReportsTab() {
     </div>`;
 }
 
-function printDailySchedule(courtId) {
-  const court = S.courts.find(c => c.id === courtId) || { name: 'All courts' };
-  const today = todayStr();
-  const bookings = S.reportData.filter(b => b.date === today && (!courtId || b.court_id === courtId));
+function printDailySchedule(courtId, printDate, reportData) {
+  const court    = S.courts.find(c => c.id === courtId) || { name: 'All courts' };
+  const today    = printDate || todayStr();
+  const bookings = (reportData || S.reportData).filter(b => b.date === today && (!courtId || b.court_id === courtId));
 
   const DAYS_NO   = ['søndag','mandag','tirsdag','onsdag','torsdag','fredag','lørdag'];
   const MONTHS_NO = ['januar','februar','mars','april','mai','juni','juli','august','september','oktober','november','desember'];
@@ -1277,9 +1435,10 @@ function printDailySchedule(courtId) {
 </html>`;
 
   const w = window.open('', '_blank');
+  if (!w) { toast('Pop-up blocked — allow pop-ups to print', 'error'); return; }
   w.document.write(html);
   w.document.close();
-  w.onload = () => w.print();
+  setTimeout(() => w.print(), 300);
 }
 
 /**
@@ -1552,7 +1711,7 @@ function connectWS() {
       // Refresh scheduler if the affected date is currently shown
       if (msg.date === S.selDate && S.view === 'scheduler') {
         loadBookings().then(() => {
-          renderSidebar();
+    
           renderScheduler();
         });
       } else if (msg.date === S.selDate) {
