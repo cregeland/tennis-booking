@@ -3,21 +3,32 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tennis Court Booking</title>
+  <title>TennisPro — Court Booking</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+  <!-- Main app mount point — all views are rendered here by app.js -->
   <div id="app"></div>
-  <div id="toast"></div>
-  <div id="modal-overlay">
+
+  <!-- Toast container — notification messages are appended here -->
+  <div id="toast" aria-live="polite"></div>
+
+  <!--
+    Confirm modal — static in the DOM, shown/hidden via JS.
+    Lives outside #app so it is never destroyed by re-renders.
+  -->
+  <div id="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div id="modal">
+      <p id="modal-title"></p>
       <p id="modal-msg"></p>
       <div class="modal-actions">
-        <button id="modal-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="modal-cancel"  class="btn btn-ghost">Cancel</button>
         <button id="modal-confirm" class="btn btn-primary">Confirm</button>
       </div>
     </div>
   </div>
+
   <script src="app.js"></script>
 </body>
 </html>
