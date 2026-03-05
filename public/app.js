@@ -39,7 +39,7 @@ const S = {
   courts:    [],            // [{id, name}] — loaded once after login
   bookings:  [],            // [{id, court_id, user_id, date, ...}] for selDate
   view:      'scheduler',   // 'scheduler' | 'admin' | 'sysinfo'
-  adminTab:  'users',       // 'users' | 'bookings'
+  adminTab:  'users',       // 'users' | 'bookings' | 'courts'
   adminData: { users: [], bookings: [] },
   sysinfoData: null,
   calDate:   new Date(),
@@ -143,7 +143,8 @@ const api = {
   // Admin — user management
   createUser: (data) => apiFetch('/api/admin/users', { method: 'POST', body: JSON.stringify(data) }),
   updateUser: (id, data) => apiFetch(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteUser: (id) => apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  deleteUser:   (id) => apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  renameCourt:  (id, name) => apiFetch(`/api/courts/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
 
   // System
   sysinfo:   () => apiFetch('/api/sysinfo'),
@@ -197,6 +198,38 @@ const Modal = (() => {
       overlay.classList.add('active');
       confirmBtn.focus();
       return new Promise(resolve => { resolver = resolve; });
+    },
+    prompt(title, label, defaultValue = '') {
+      return new Promise(resolve => {
+        const promptOverlay = document.createElement('div');
+        promptOverlay.className = 'modal-overlay active';
+        promptOverlay.innerHTML = `
+          <div class="modal" style="max-width:380px;width:100%">
+            <h3 style="margin:0 0 1rem">${escHtml(title)}</h3>
+            <div class="form-group">
+              <label>${escHtml(label)}</label>
+              <input id="modal-prompt-input" type="text" class="form-input" value="${escHtml(defaultValue)}">
+            </div>
+            <div class="modal-actions" style="margin-top:1rem">
+              <button class="btn btn-ghost" id="modal-prompt-cancel">Cancel</button>
+              <button class="btn btn-primary" id="modal-prompt-ok">OK</button>
+            </div>
+          </div>`;
+        document.body.appendChild(promptOverlay);
+        const input  = promptOverlay.querySelector('#modal-prompt-input');
+        const okBtn  = promptOverlay.querySelector('#modal-prompt-ok');
+        const cancel = promptOverlay.querySelector('#modal-prompt-cancel');
+        input.focus();
+        input.select();
+        const done = val => { promptOverlay.remove(); resolve(val); };
+        okBtn.addEventListener('click', () => done(input.value));
+        cancel.addEventListener('click', () => done(null));
+        promptOverlay.addEventListener('click', e => { if (e.target === promptOverlay) done(null); });
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter')  done(input.value);
+          if (e.key === 'Escape') done(null);
+        });
+      });
     },
   };
 })();
@@ -724,6 +757,17 @@ function renderScheduler() {
   document.getElementById('export-cal').addEventListener('click', () => exportCalendar(false));
   document.getElementById('export-cal-all')?.addEventListener('click', () => exportCalendar(true));
 
+  // Scroll to current time (or 08:00 for future dates)
+  const wrap = content.querySelector('.scheduler-wrap');
+  if (wrap) {
+    const now = new Date();
+    const targetHour = S.selDate === todayStr()
+      ? Math.max(7, Math.min(now.getHours(), 21))
+      : 8;
+    const scrollTo = headerH + (targetHour - 7) * slotH - 80;
+    wrap.scrollTop = Math.max(0, scrollTo);
+  }
+
   const grid = document.getElementById('sched-grid');
   grid.addEventListener('click', async e => {
     const slot = e.target.closest('.sched-slot');
@@ -834,6 +878,9 @@ function renderAdmin() {
       <button class="admin-tab ${S.adminTab === 'bookings' ? 'active' : ''}" data-tab="bookings">
         📋 All Bookings
       </button>
+      <button class="admin-tab ${S.adminTab === 'courts' ? 'active' : ''}" data-tab="courts">
+        🎾 Courts
+      </button>
     </div>
     <div id="admin-content">
       ${isLoading
@@ -875,6 +922,22 @@ function renderAdmin() {
     });
   });
 
+  // Rename court buttons (courts tab)
+  content.querySelectorAll('[data-rename-court]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id    = parseInt(btn.dataset.renameCourt, 10);
+      const court = S.courts.find(c => c.id === id);
+      const name  = await Modal.prompt('Rename Court', 'New name:', court?.name || '');
+      if (!name || name.trim() === court?.name) return;
+      try {
+        const updated = await api.renameCourt(id, name.trim());
+        S.courts = S.courts.map(c => c.id === id ? updated : c);
+        toast(`Court renamed to "${updated.name}"`);
+        renderAdmin();
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+
   // Cancel booking buttons (bookings tab)
   content.querySelectorAll('[data-cancel-id]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -893,7 +956,8 @@ function renderAdmin() {
 }
 
 function buildAdminPanel() {
-  if (S.adminTab === 'users') return buildUsersTab();
+  if (S.adminTab === 'users')   return buildUsersTab();
+  if (S.adminTab === 'courts')  return buildCourtsTab();
   return buildBookingsTab();
 }
 
@@ -957,6 +1021,27 @@ function buildBookingsTab() {
       <table class="data-table">
         <thead>
           <tr><th>Date</th><th>Time</th><th>Court</th><th>Player</th><th></th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function buildCourtsTab() {
+  const rows = S.courts.map(c => `
+    <tr>
+      <td id="court-name-${c.id}">${escHtml(c.name)}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" data-rename-court="${c.id}">Rename</button>
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Court name</th><th></th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
@@ -1244,6 +1329,14 @@ function connectWS() {
       if (S.view === 'admin' && S.adminTab === 'bookings') {
         api.adminBookings().then(b => { S.adminData.bookings = b; renderAdmin(); });
       }
+    }
+
+    if (msg.type === 'courts_changed') {
+      api.courts().then(courts => {
+        S.courts = courts;
+        if (S.view === 'scheduler') renderScheduler();
+        if (S.view === 'admin' && S.adminTab === 'courts') renderAdmin();
+      });
     }
   });
 

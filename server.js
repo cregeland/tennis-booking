@@ -214,6 +214,20 @@ app.get('/api/courts', authenticate, (req, res) => {
   res.json(db.prepare('SELECT * FROM courts ORDER BY id').all());
 });
 
+app.put('/api/courts/:id', authenticate, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim())
+    return res.status(400).json({ error: 'Name required' });
+  const court = db.prepare('SELECT id FROM courts WHERE id = ?').get(id);
+  if (!court) return res.status(404).json({ error: 'Court not found' });
+  db.prepare('UPDATE courts SET name = ? WHERE id = ?').run(name.trim(), id);
+  const updated = db.prepare('SELECT * FROM courts WHERE id = ?').get(id);
+  broadcast({ type: 'courts_changed' });
+  res.json(updated);
+});
+
 // ── Bookings ──────────────────────────────────────────────────────────────────
 
 app.get('/api/bookings', authenticate, (req, res) => {

@@ -20,6 +20,9 @@
 
 /* ── 1. Design Tokens ───────────────────────────────────────────────────────── */
 :root {
+  --past-stripe-a: #e4e7ef;
+  --past-stripe-b: #d0d4df;
+
   /* HA-inspired surfaces — slightly warm/blue-tinted grays */
   --bg:    #f2f4f8;
   --bg2:   #ffffff;
@@ -67,6 +70,9 @@
 }
 
 [data-theme="dark"] {
+  --past-stripe-a: #191c23;
+  --past-stripe-b: #141720;
+
   --bg:    #111318;
   --bg2:   #1e2128;
   --bg3:   #252930;
@@ -181,7 +187,8 @@ label {
 }
 
 input[type="email"],
-input[type="password"] {
+input[type="password"],
+input[type="date"] {
   width: 100%;
   padding: .7rem 1rem;
   background: var(--bg3);
@@ -562,12 +569,24 @@ input:focus {
   }
 }
 
-/* Past — greyed out, not interactive */
+/* Past — clearly greyed out, not interactive */
 .sched-slot.past {
-  background: var(--bg3);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--past-stripe-a) 0px,
+    var(--past-stripe-a) 4px,
+    var(--past-stripe-b) 4px,
+    var(--past-stripe-b) 10px
+  );
   cursor: default;
 }
-.sched-slot.past:active { background: var(--bg3); } /* no tap feedback */
+.sched-slot.past:active { background: repeating-linear-gradient(
+    135deg,
+    var(--past-stripe-a) 0px,
+    var(--past-stripe-a) 4px,
+    var(--past-stripe-b) 4px,
+    var(--past-stripe-b) 10px
+  ); } /* no tap feedback */
 
 /* Booked — own or others' */
 .sched-slot.mine, .sched-slot.others { cursor: pointer; }
@@ -833,7 +852,7 @@ input:focus {
   color: var(--text);
   border: 1.5px solid var(--border);
   border-radius: var(--r-s);
-  font-size: .925rem;
+  font-size: 1rem; /* must be ≥16px to prevent iOS Safari auto-zoom */
   outline: none;
   min-height: 48px;
   cursor: pointer;
@@ -915,6 +934,95 @@ input:focus {
   .edit-actions-right .btn { width: 100%; padding: .75rem; }
 }
 
+/* ── 11b. System Info ───────────────────────────────────────────────────────── */
+.sysinfo-wrap {
+  max-width: 900px;
+}
+
+.sysinfo-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+.sysinfo-title {
+  font-size: 1.1rem; font-weight: 800; letter-spacing: -.02em;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.info-card {
+  background: var(--bg2);
+  border-radius: var(--r-m);
+  box-shadow: var(--shadow-card);
+  padding: 1rem 1.1rem;
+}
+
+.info-card-title {
+  font-size: .68rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--text3);
+  margin-bottom: .75rem;
+}
+
+.info-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: .82rem; color: var(--text2);
+  padding: .38rem 0;
+  border-bottom: 1px solid var(--border);
+  gap: .5rem;
+}
+.info-row:last-child { border-bottom: none; }
+.info-row span  { flex-shrink: 0; }
+.info-row strong { color: var(--text); font-weight: 600; text-align: right; }
+
+/* Changelog */
+.changelog-section {
+  background: var(--bg2);
+  border-radius: var(--r-m);
+  box-shadow: var(--shadow-card);
+  padding: 1.1rem 1.25rem;
+}
+
+.changelog-body { margin-top: .5rem; }
+
+.cl-version {
+  font-size: .95rem; font-weight: 800;
+  color: var(--primary);
+  margin: 1.1rem 0 .3rem;
+}
+.cl-version:first-child { margin-top: 0; }
+
+.cl-section {
+  font-size: .75rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text3);
+  margin: .65rem 0 .25rem;
+}
+
+.cl-list {
+  margin: 0 0 .5rem 1.1rem;
+  display: flex; flex-direction: column; gap: .2rem;
+}
+.cl-list li {
+  font-size: .83rem; color: var(--text2); line-height: 1.55;
+}
+
+.cl-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1rem 0;
+}
+
+.cl-p {
+  font-size: .83rem; color: var(--text2);
+  margin-bottom: .35rem;
+}
+
+
 /* ── 12. Responsive ─────────────────────────────────────────────────────────── */
 
 /* Tablet — sidebar stays, bottom nav hidden */
@@ -953,4 +1061,63 @@ input:focus {
 
   /* Login */
   .login-card { padding: 1.75rem 1.25rem; }
+}
+
+/* ── 13. User Management Modal ───────────────────────────────────────────────── */
+
+/* Generic overlay class (used by dynamically created modals) */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  display: none; align-items: center; justify-content: center;
+  z-index: 200; padding: 1.5rem;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+.modal-overlay.active { display: flex; }
+
+.modal-overlay .modal {
+  background: var(--bg2);
+  border-radius: var(--r-l);
+  padding: 1.75rem;
+  box-shadow: var(--shadow-xl);
+  animation: modalIn .15s var(--ease);
+  display: flex; flex-direction: column; gap: .75rem;
+}
+
+/* Text input — extend existing field styles to type="text" */
+input[type="text"] {
+  width: 100%;
+  padding: .7rem 1rem;
+  background: var(--bg3);
+  color: var(--text);
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-s);
+  font-size: 1rem;
+  outline: none;
+  transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
+  min-height: 48px;
+}
+input[type="text"]:focus {
+  background: var(--bg2);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-t);
+}
+
+/* form-input class — same look, works on any input type */
+.form-input {
+  width: 100%;
+  padding: .7rem 1rem;
+  background: var(--bg3);
+  color: var(--text);
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-s);
+  font-size: 1rem;
+  outline: none;
+  transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
+  min-height: 48px;
+}
+.form-input:focus {
+  background: var(--bg2);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-t);
 }
