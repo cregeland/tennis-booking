@@ -835,14 +835,14 @@ function renderScheduler() {
   document.getElementById('export-cal-all')?.addEventListener('click', () => exportCalendar(true));
 
   // Scroll to current time (or 08:00 for future dates)
-  const wrap = content.querySelector('.scheduler-wrap');
-  if (wrap) {
+  const scrollWrap = content.querySelector('.scheduler-wrap');
+  if (scrollWrap) {
     const now = new Date();
     const targetHour = S.selDate === todayStr()
       ? Math.max(7, Math.min(now.getHours(), 21))
       : 8;
     const scrollTo = headerH + (targetHour - 7) * slotH - 80;
-    wrap.scrollTop = Math.max(0, scrollTo);
+    scrollWrap.scrollTop = Math.max(0, scrollTo);
   }
 
   const grid = document.getElementById('sched-grid');
