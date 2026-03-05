@@ -693,6 +693,24 @@ input:focus {
 }
 .admin-tab.active { background: var(--primary-l); color: var(--primary); }
 
+.report-filters {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-m);
+  padding: 1rem;
+  margin-bottom: .75rem;
+  box-shadow: var(--shadow-card);
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: flex-start;
+}
+.filter-row .form-group { margin: 0; }
+
+tr.past-row td { color: var(--text3); }
+
 .table-wrap {
   overflow-x: auto; -webkit-overflow-scrolling: touch;
   border: 1px solid var(--border);

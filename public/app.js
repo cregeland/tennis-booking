@@ -38,9 +38,12 @@ const S = {
   user:      null,          // {id, name, email, role} — null when logged out
   courts:    [],            // [{id, name}] — loaded once after login
   bookings:  [],            // [{id, court_id, user_id, date, ...}] for selDate
-  view:      'scheduler',   // 'scheduler' | 'admin' | 'sysinfo'
-  adminTab:  'users',       // 'users' | 'bookings' | 'courts'
+  view:      'scheduler',   // 'scheduler' | 'mybookings' | 'admin' | 'sysinfo'
+  adminTab:  'users',       // 'users' | 'bookings' | 'courts' | 'reports'
   adminData: { users: [], bookings: [] },
+  reportData: [],
+  reportFilters: { court_id: '', user_id: '', date_from: '', date_to: '' },
+  myBookings: [],
   sysinfoData: null,
   calDate:   new Date(),
   selDate:   todayStr(),
@@ -145,6 +148,8 @@ const api = {
   updateUser: (id, data) => apiFetch(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteUser:   (id) => apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }),
   renameCourt:  (id, name) => apiFetch(`/api/courts/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  reports:      (params)   => apiFetch('/api/admin/reports?' + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v)))),
+  myBookings:   ()         => apiFetch('/api/bookings/mine'),
 
   // System
   sysinfo:   () => apiFetch('/api/sysinfo'),
@@ -388,8 +393,9 @@ function render() {
 }
 
 function renderMainContent() {
-  if (S.view === 'scheduler') renderScheduler();
-  else if (S.view === 'admin') renderAdmin();
+  if (S.view === 'scheduler')   renderScheduler();
+  else if (S.view === 'mybookings') renderMyBookings();
+  else if (S.view === 'admin')  renderAdmin();
   else if (S.view === 'sysinfo') renderSysInfo();
 }
 
@@ -397,7 +403,10 @@ function renderBottomNav() {
   const inner = document.querySelector('#bottom-nav .bnav-inner');
   if (!inner) return;
 
-  const tabs = [{ view: 'scheduler', icon: '📅', label: 'Book' }];
+  const tabs = [
+    { view: 'scheduler',   icon: '📅', label: 'Book' },
+    { view: 'mybookings',  icon: '🎾', label: 'Mine' },
+  ];
   if (S.user?.role === 'admin') tabs.push({ view: 'admin', icon: '⚙️', label: 'Admin' });
   tabs.push({ view: 'sysinfo', icon: 'ℹ️', label: 'Info' });
 
@@ -412,8 +421,9 @@ function renderBottomNav() {
   inner.querySelectorAll('[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       S.view = btn.dataset.view;
-      if (S.view === 'admin')   loadAdminData();
-      if (S.view === 'sysinfo') loadSysInfo();
+      if (S.view === 'admin')      loadAdminData();
+      if (S.view === 'sysinfo')    loadSysInfo();
+      if (S.view === 'mybookings') loadMyBookings();
       renderNav();
       renderBottomNav();
       renderMainContent();
@@ -515,6 +525,9 @@ function renderNav() {
     <button class="nav-tab ${S.view === 'scheduler' ? 'active' : ''}" data-view="scheduler">
       📅 Book Courts
     </button>
+    <button class="nav-tab ${S.view === 'mybookings' ? 'active' : ''}" data-view="mybookings">
+      🎾 My Bookings
+    </button>
     ${isAdmin ? `
     <button class="nav-tab ${S.view === 'admin' ? 'active' : ''}" data-view="admin">
       ⚙️ Admin
@@ -535,8 +548,9 @@ function renderNav() {
   nav.querySelectorAll('[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       S.view = btn.dataset.view;
-      if (S.view === 'admin')   loadAdminData();
-      if (S.view === 'sysinfo') loadSysInfo();
+      if (S.view === 'admin')      loadAdminData();
+      if (S.view === 'sysinfo')    loadSysInfo();
+      if (S.view === 'mybookings') loadMyBookings();
       renderNav();
       renderMainContent();
     });
@@ -585,6 +599,69 @@ function renderSidebar() {
   `;
 
   renderMiniCal();
+}
+
+async function loadMyBookings() {
+  try {
+    S.myBookings = await api.myBookings();
+    if (S.view === 'mybookings') renderMyBookings();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function renderMyBookings() {
+  const content = document.getElementById('content');
+  if (!content) return;
+
+  const today = todayStr();
+  const rows = S.myBookings.length
+    ? S.myBookings.map(b => {
+        const isPast = b.date < today;
+        return `
+          <tr class="${isPast ? 'past-row' : ''}">
+            <td>${fmtDateLongNO(b.date)}</td>
+            <td>${fmtHour(b.start_hour)}–${fmtHour(b.end_hour)}</td>
+            <td>${escHtml(b.court_name)}</td>
+            <td>
+              ${!isPast ? `<button class="btn btn-danger btn-sm" data-cancel-mine="${b.id}">Cancel</button>` : ''}
+            </td>
+          </tr>`;
+      }).join('')
+    : `<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:2.5rem">No upcoming bookings</td></tr>`;
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+      <h2 style="font-size:1.1rem;font-weight:700;margin:0">My Bookings</h2>
+      <button class="btn btn-ghost btn-sm" id="mb-refresh">Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Date</th><th>Time</th><th>Court</th><th></th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  content.querySelector('#mb-refresh').addEventListener('click', loadMyBookings);
+
+  content.querySelectorAll('[data-cancel-mine]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = parseInt(btn.dataset.cancelMine, 10);
+      const booking = S.myBookings.find(b => b.id === id);
+      const confirmed = await Modal.ask(
+        'Cancel Booking',
+        `Cancel ${booking?.court_name} on ${fmtDateLongNO(booking?.date)} at ${fmtHour(booking?.start_hour)}?`
+      );
+      if (!confirmed) return;
+      try {
+        await api.cancel(id);
+        toast('Booking cancelled');
+        await loadMyBookings();
+        await loadBookings();
+        renderSidebar();
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
 }
 
 function renderMiniCal() {
@@ -881,6 +958,9 @@ function renderAdmin() {
       <button class="admin-tab ${S.adminTab === 'courts' ? 'active' : ''}" data-tab="courts">
         🎾 Courts
       </button>
+      <button class="admin-tab ${S.adminTab === 'reports' ? 'active' : ''}" data-tab="reports">
+        📊 Reports
+      </button>
     </div>
     <div id="admin-content">
       ${isLoading
@@ -922,6 +1002,38 @@ function renderAdmin() {
     });
   });
 
+  // Reports tab
+  const rfSearch = content.querySelector('#rf-search');
+  if (rfSearch) {
+    const doSearch = async () => {
+      S.reportFilters = {
+        court_id:  content.querySelector('#rf-court').value,
+        user_id:   content.querySelector('#rf-user').value,
+        date_from: content.querySelector('#rf-from').value,
+        date_to:   content.querySelector('#rf-to').value,
+      };
+      try {
+        S.reportData = await api.reports(S.reportFilters);
+        renderAdmin();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    rfSearch.addEventListener('click', doSearch);
+    content.querySelector('#rf-reset').addEventListener('click', () => {
+      S.reportFilters = { court_id: '', user_id: '', date_from: '', date_to: '' };
+      S.reportData = [];
+      renderAdmin();
+    });
+    content.querySelector('#rf-print-daily').addEventListener('click', async () => {
+      // Fetch today's data for selected court then print
+      const courtId = parseInt(content.querySelector('#rf-court').value, 10) || null;
+      const today = todayStr();
+      try {
+        S.reportData = await api.reports({ court_id: courtId || '', date_from: today, date_to: today });
+        printDailySchedule(courtId);
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
   // Rename court buttons (courts tab)
   content.querySelectorAll('[data-rename-court]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -958,6 +1070,7 @@ function renderAdmin() {
 function buildAdminPanel() {
   if (S.adminTab === 'users')   return buildUsersTab();
   if (S.adminTab === 'courts')  return buildCourtsTab();
+  if (S.adminTab === 'reports') return buildReportsTab();
   return buildBookingsTab();
 }
 
@@ -1046,6 +1159,127 @@ function buildCourtsTab() {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+function buildReportsTab() {
+  const f = S.reportFilters;
+  const courtOptions = S.courts.map(c =>
+    `<option value="${c.id}" ${f.court_id == c.id ? 'selected' : ''}>${escHtml(c.name)}</option>`
+  ).join('');
+  const userOptions = S.adminData.users.map(u =>
+    `<option value="${u.id}" ${f.user_id == u.id ? 'selected' : ''}>${escHtml(u.name)}</option>`
+  ).join('');
+
+  const rows = S.reportData.length
+    ? S.reportData.map(b => `
+        <tr>
+          <td>${fmtDateLongNO(b.date)}</td>
+          <td>${fmtHour(b.start_hour)}–${fmtHour(b.end_hour)}</td>
+          <td>${escHtml(b.court_name)}</td>
+          <td>${escHtml(b.user_name)}</td>
+          <td style="color:var(--text3);font-size:.8rem">${escHtml(b.user_email)}</td>
+        </tr>`).join('')
+    : `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:2rem">No bookings found</td></tr>`;
+
+  return `
+    <div class="report-filters">
+      <div class="filter-row">
+        <div class="form-group" style="flex:1;min-width:140px">
+          <label>Court</label>
+          <select id="rf-court" class="form-select">
+            <option value="">All courts</option>
+            ${courtOptions}
+          </select>
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px">
+          <label>Player</label>
+          <select id="rf-user" class="form-select">
+            <option value="">All players</option>
+            ${userOptions}
+          </select>
+        </div>
+        <div class="form-group" style="flex:1;min-width:130px">
+          <label>From date</label>
+          <input id="rf-from" type="date" class="form-input" value="${escHtml(f.date_from)}">
+        </div>
+        <div class="form-group" style="flex:1;min-width:130px">
+          <label>To date</label>
+          <input id="rf-to" type="date" class="form-input" value="${escHtml(f.date_to)}">
+        </div>
+        <div class="form-group" style="align-self:flex-end">
+          <button class="btn btn-primary" id="rf-search">Search</button>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.5rem">
+        <button class="btn btn-ghost btn-sm" id="rf-reset">Reset</button>
+        <button class="btn btn-ghost btn-sm" id="rf-print-daily" title="Print today's schedule for selected court">🖨 Print daily schedule</button>
+      </div>
+    </div>
+    <div class="report-summary" id="report-summary" style="margin:.5rem 0;color:var(--text2);font-size:.85rem">
+      ${S.reportData.length ? `${S.reportData.length} booking${S.reportData.length !== 1 ? 's' : ''} found` : ''}
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="report-table">
+        <thead>
+          <tr><th>Date</th><th>Time</th><th>Court</th><th>Player</th><th>Email</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function printDailySchedule(courtId) {
+  const court = S.courts.find(c => c.id === courtId) || { name: 'All courts' };
+  const today = todayStr();
+  const bookings = S.reportData.filter(b => b.date === today && (!courtId || b.court_id === courtId));
+
+  const DAYS_NO   = ['søndag','mandag','tirsdag','onsdag','torsdag','fredag','lørdag'];
+  const MONTHS_NO = ['januar','februar','mars','april','mai','juni','juli','august','september','oktober','november','desember'];
+  const [y, m, d] = today.split('-').map(Number);
+  const dayName   = DAYS_NO[new Date(y, m - 1, d).getDay()];
+  const dateLabel = `${dayName.charAt(0).toUpperCase() + dayName.slice(1)}, ${d}. ${MONTHS_NO[m - 1]} ${y}`;
+
+  const rows = HOURS.map(h => {
+    const booking = bookings.find(b => b.start_hour === h);
+    return `<tr class="${booking ? 'booked' : 'free'}">
+      <td class="time-col">${String(h).padStart(2,'0')}:00 – ${String(h+1).padStart(2,'0')}:00</td>
+      <td class="player-col">${booking ? escHtml(booking.user_name) : '<span class="free-label">Ledig</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <title>${court.name} – ${dateLabel}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, Arial, sans-serif; padding: 2cm; color: #111; }
+    h1 { font-size: 1.4rem; margin-bottom: .25rem; }
+    .subtitle { color: #555; font-size: .95rem; margin-bottom: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: .5rem .75rem; border-bottom: 2px solid #111; font-size: .85rem; text-transform: uppercase; letter-spacing: .05em; }
+    td { padding: .55rem .75rem; border-bottom: 1px solid #ddd; font-size: 1rem; }
+    tr.booked td { background: #f0faf4; font-weight: 500; }
+    .time-col { width: 160px; color: #333; }
+    .free-label { color: #aaa; font-weight: normal; }
+    @media print { body { padding: 1cm; } }
+  </style>
+</head>
+<body>
+  <h1>${escHtml(court.name)}</h1>
+  <div class="subtitle">${dateLabel}</div>
+  <table>
+    <thead><tr><th>Tid</th><th>Spiller</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</body>
+</html>`;
+
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+  w.onload = () => w.print();
 }
 
 /**

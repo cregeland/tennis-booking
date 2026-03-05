@@ -230,6 +230,20 @@ app.put('/api/courts/:id', authenticate, requireAdmin, (req, res) => {
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
 
+app.get('/api/bookings/mine', authenticate, (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT b.id, b.court_id, b.user_id, b.date, b.start_hour, b.end_hour,
+           u.name AS user_name, c.name AS court_name
+    FROM bookings b
+    JOIN users u ON b.user_id = u.id
+    JOIN courts c ON b.court_id = c.id
+    WHERE b.user_id = ? AND b.date >= ?
+    ORDER BY b.date ASC, b.start_hour ASC
+  `).all(req.user.id, today);
+  res.json(rows);
+});
+
 app.get('/api/bookings', authenticate, (req, res) => {
   const { date } = req.query;
   if (!isValidDate(date)) return res.status(400).json({ error: 'Valid date required (YYYY-MM-DD)' });
@@ -514,6 +528,31 @@ app.delete('/api/admin/users/:id', authenticate, requireAdmin, (req, res) => {
   db.prepare('DELETE FROM bookings WHERE user_id = ?').run(id);
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
   res.json({ ok: true });
+});
+
+app.get('/api/admin/reports', authenticate, requireAdmin, (req, res) => {
+  const { court_id, user_id, date_from, date_to } = req.query;
+  const conditions = [];
+  const params = [];
+
+  if (court_id) { conditions.push('b.court_id = ?'); params.push(parseInt(court_id, 10)); }
+  if (user_id)  { conditions.push('b.user_id = ?');  params.push(parseInt(user_id, 10)); }
+  if (date_from && isValidDate(date_from)) { conditions.push('b.date >= ?'); params.push(date_from); }
+  if (date_to   && isValidDate(date_to))   { conditions.push('b.date <= ?'); params.push(date_to); }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const rows = db.prepare(`
+    SELECT b.id, b.date, b.start_hour, b.end_hour,
+           u.name AS user_name, u.email AS user_email,
+           c.name AS court_name
+    FROM bookings b
+    JOIN users u ON b.user_id = u.id
+    JOIN courts c ON b.court_id = c.id
+    ${where}
+    ORDER BY b.date ASC, b.start_hour ASC
+    LIMIT 1000
+  `).all(...params);
+  res.json(rows);
 });
 
 app.get('/api/admin/bookings', authenticate, requireAdmin, (req, res) => {
