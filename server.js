@@ -1,13 +1,20 @@
-const express = require('express');
-const Database = require('better-sqlite3');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const cookieParser = require('cookie-parser');
-const path = require('path');
+require('dotenv').config();
+const http        = require('http');
+const express     = require('express');
+const { WebSocketServer } = require('ws');
+const Database    = require('better-sqlite3');
+const bcrypt      = require('bcryptjs');
+const jwt         = require('jsonwebtoken');
+const helmet      = require('helmet');
+const rateLimit   = require('express-rate-limit');
+const cookieParser= require('cookie-parser');
+const path        = require('path');
+const os          = require('os');
+const fs          = require('fs');
+const { notifyBookingCreated, notifyBookingCancelled } = require('./notifications');
 
 const app = express();
+const server = http.createServer(app);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production-use-env-var';
 const PORT = process.env.PORT || 3000;
 
@@ -40,6 +47,12 @@ const db = new Database(path.join(__dirname, 'tennis.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// Migrate: add phone column if not present
+const cols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+if (!cols.includes('phone')) {
+  db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +60,7 @@ db.exec(`
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
+    phone TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS courts (
@@ -90,7 +104,52 @@ if (userCount === 0) {
   console.log('Database seeded.');
 }
 
-// Auth middleware
+// ── WebSocket Server ──────────────────────────────────────────────────────────
+
+const wss = new WebSocketServer({ server });
+
+// Parse JWT from cookie header string
+function parseTokenFromCookieHeader(cookieHeader) {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\s*)token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+wss.on('connection', (ws, req) => {
+  const token = parseTokenFromCookieHeader(req.headers.cookie);
+  if (!token) { ws.close(4001, 'Unauthorized'); return; }
+  try {
+    ws.user = jwt.verify(token, JWT_SECRET);
+  } catch {
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+  // Keep connection alive with pings
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+});
+
+// Ping all clients every 30s to detect dead connections
+const pingInterval = setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) { ws.terminate(); return; }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on('close', () => clearInterval(pingInterval));
+
+/** Broadcast a JSON message to all authenticated connected clients. */
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  wss.clients.forEach(ws => {
+    if (ws.readyState === 1 && ws.user) ws.send(msg);
+  });
+}
+
+// ── Auth Middleware ───────────────────────────────────────────────────────────
+
 function authenticate(req, res, next) {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
@@ -110,7 +169,7 @@ function requireAdmin(req, res, next) {
 
 function isValidDate(d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d)); }
 
-// ── Auth Routes ──────────────────────────────────────────────────────────────
+// ── Auth Routes ───────────────────────────────────────────────────────────────
 
 app.post('/api/login', authLimiter, async (req, res) => {
   try {
@@ -149,13 +208,13 @@ app.get('/api/me', authenticate, (req, res) => {
   res.json({ id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role });
 });
 
-// ── Courts ───────────────────────────────────────────────────────────────────
+// ── Courts ────────────────────────────────────────────────────────────────────
 
 app.get('/api/courts', authenticate, (req, res) => {
   res.json(db.prepare('SELECT * FROM courts ORDER BY id').all());
 });
 
-// ── Bookings ─────────────────────────────────────────────────────────────────
+// ── Bookings ──────────────────────────────────────────────────────────────────
 
 app.get('/api/bookings', authenticate, (req, res) => {
   const { date } = req.query;
@@ -184,7 +243,6 @@ app.post('/api/bookings', authenticate, (req, res) => {
   const court = db.prepare('SELECT id FROM courts WHERE id = ?').get(court_id);
   if (!court) return res.status(400).json({ error: 'Invalid court' });
 
-  // Prevent booking in the past (allow today's future hours)
   const slotTime = new Date(`${date}T${String(h).padStart(2,'0')}:00:00`);
   if (slotTime < new Date()) return res.status(400).json({ error: 'Cannot book a past time slot' });
 
@@ -199,6 +257,12 @@ app.post('/api/bookings', authenticate, (req, res) => {
       FROM bookings b JOIN users u ON b.user_id=u.id JOIN courts c ON b.court_id=c.id
       WHERE b.id = ?
     `).get(result.lastInsertRowid);
+
+    broadcast({ type: 'bookings_changed', date });
+    notifyBookingCreated(
+      { email: req.user.email, phone: db.prepare('SELECT phone FROM users WHERE id=?').get(req.user.id)?.phone, name: req.user.name },
+      booking
+    );
     res.status(201).json(booking);
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'That slot is already booked' });
@@ -216,13 +280,13 @@ app.delete('/api/bookings/:id', authenticate, (req, res) => {
   if (req.user.role !== 'admin' && booking.user_id !== req.user.id)
     return res.status(403).json({ error: 'You can only cancel your own bookings' });
 
+  const booker = db.prepare('SELECT name, email, phone FROM users WHERE id=?').get(booking.user_id);
+  const courtName = db.prepare('SELECT name FROM courts WHERE id=?').get(booking.court_id)?.name || '';
   db.prepare('DELETE FROM bookings WHERE id = ?').run(id);
+  broadcast({ type: 'bookings_changed', date: booking.date });
+  notifyBookingCancelled(booker, { ...booking, court_name: courtName, end_hour: booking.end_hour });
   res.json({ ok: true });
 });
-
-// ── Edit Booking ──────────────────────────────────────────────────────────────
-// Moves an existing booking to a new court/date/time atomically (delete + insert
-// in a single SQLite transaction so no slot is ever double-booked).
 
 app.put('/api/bookings/:id', authenticate, (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -249,7 +313,6 @@ app.put('/api/bookings/:id', authenticate, (req, res) => {
   if (slotTime < new Date()) return res.status(400).json({ error: 'Cannot book a past time slot' });
 
   try {
-    // Atomic transaction: remove old slot, claim new slot
     const move = db.transaction(() => {
       db.prepare('DELETE FROM bookings WHERE id = ?').run(id);
       return db.prepare(
@@ -264,6 +327,11 @@ app.put('/api/bookings/:id', authenticate, (req, res) => {
       FROM bookings b JOIN users u ON b.user_id=u.id JOIN courts c ON b.court_id=c.id
       WHERE b.id = ?
     `).get(newId);
+
+    // Broadcast both old and new date (in case date changed)
+    broadcast({ type: 'bookings_changed', date });
+    if (booking.date !== date) broadcast({ type: 'bookings_changed', date: booking.date });
+
     res.json(updated);
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'That slot is already taken' });
@@ -272,9 +340,6 @@ app.put('/api/bookings/:id', authenticate, (req, res) => {
 });
 
 // ── Calendar Export (ICS) ─────────────────────────────────────────────────────
-// Generates RFC 5545-compliant iCalendar files importable by iOS Calendar,
-// Google Calendar, Outlook, etc.  Uses floating local time (no TZID) which
-// displays correctly when device and server share the same timezone (Norway).
 
 function buildICS(bookings, calName) {
   const esc  = s => String(s).replace(/[\\;,]/g, c => '\\' + c);
@@ -311,7 +376,6 @@ function buildICS(bookings, calName) {
   ].join('\r\n');
 }
 
-// Download own upcoming bookings as .ics
 app.get('/api/calendar/mine.ics', authenticate, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare(`
@@ -327,7 +391,6 @@ app.get('/api/calendar/mine.ics', authenticate, (req, res) => {
   res.send(buildICS(rows, `${req.user.name} – Tennisbane`));
 });
 
-// Download ALL upcoming bookings as .ics (admin only)
 app.get('/api/calendar/all.ics', authenticate, requireAdmin, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare(`
@@ -343,10 +406,100 @@ app.get('/api/calendar/all.ics', authenticate, requireAdmin, (req, res) => {
   res.send(buildICS(rows, 'Alle bestillinger – Tennisbane'));
 });
 
-// ── Admin Routes ─────────────────────────────────────────────────────────────
+// ── Admin Routes ──────────────────────────────────────────────────────────────
 
 app.get('/api/admin/users', authenticate, requireAdmin, (req, res) => {
-  res.json(db.prepare('SELECT id, name, email, role, created_at FROM users ORDER BY id').all());
+  res.json(db.prepare('SELECT id, name, email, role, phone, created_at FROM users ORDER BY id').all());
+});
+
+// Create user
+app.post('/api/admin/users', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { name, email, password, role, phone } = req.body ?? {};
+    if (!name || !email || !password)
+      return res.status(400).json({ error: 'Name, email and password required' });
+    if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string')
+      return res.status(400).json({ error: 'Invalid input' });
+    if (!['user', 'admin'].includes(role))
+      return res.status(400).json({ error: 'Role must be user or admin' });
+    if (password.length < 6)
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const result = db.prepare(
+      'INSERT INTO users (name, email, password_hash, role, phone) VALUES (?,?,?,?,?)'
+    ).run(name.trim(), email.toLowerCase().trim(), hash, role, phone?.trim() || null);
+
+    const user = db.prepare('SELECT id, name, email, role, phone, created_at FROM users WHERE id = ?')
+      .get(result.lastInsertRowid);
+    res.status(201).json(user);
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Email already in use' });
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update user
+app.put('/api/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+
+    const { name, email, role, password, phone } = req.body ?? {};
+    if (!name || !email) return res.status(400).json({ error: 'Name and email required' });
+    if (typeof name !== 'string' || typeof email !== 'string')
+      return res.status(400).json({ error: 'Invalid input' });
+    if (!['user', 'admin'].includes(role))
+      return res.status(400).json({ error: 'Role must be user or admin' });
+    // Prevent removing the last admin
+    if (existing.role === 'admin' && role === 'user') {
+      const adminCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get().c;
+      if (adminCount <= 1) return res.status(400).json({ error: 'Cannot demote the last admin' });
+    }
+
+    if (password) {
+      if (typeof password !== 'string' || password.length < 6)
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      const hash = await bcrypt.hash(password, 10);
+      db.prepare('UPDATE users SET name=?, email=?, role=?, phone=?, password_hash=? WHERE id=?')
+        .run(name.trim(), email.toLowerCase().trim(), role, phone?.trim() || null, hash, id);
+    } else {
+      db.prepare('UPDATE users SET name=?, email=?, role=?, phone=? WHERE id=?')
+        .run(name.trim(), email.toLowerCase().trim(), role, phone?.trim() || null, id);
+    }
+
+    const user = db.prepare('SELECT id, name, email, role, phone, created_at FROM users WHERE id = ?').get(id);
+    res.json(user);
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Email already in use' });
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete user
+app.delete('/api/admin/users/:id', authenticate, requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+  if (id === req.user.id) return res.status(400).json({ error: 'Cannot delete your own account' });
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (user.role === 'admin') {
+    const adminCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get().c;
+    if (adminCount <= 1) return res.status(400).json({ error: 'Cannot delete the last admin' });
+  }
+
+  // Delete user's bookings first (foreign key), then the user
+  db.prepare('DELETE FROM bookings WHERE user_id = ?').run(id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  res.json({ ok: true });
 });
 
 app.get('/api/admin/bookings', authenticate, requireAdmin, (req, res) => {
@@ -362,6 +515,52 @@ app.get('/api/admin/bookings', authenticate, requireAdmin, (req, res) => {
   res.json(rows);
 });
 
-app.listen(PORT, '0.0.0.0', () =>
+// ── System Info ───────────────────────────────────────────────────────────────
+
+app.get('/api/sysinfo', authenticate, (req, res) => {
+  const mem   = process.memoryUsage();
+  const toMB  = b => Math.round(b / 1024 / 1024 * 10) / 10;
+  const load  = os.loadavg();
+
+  const userCount    = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  const courtCount   = db.prepare('SELECT COUNT(*) as c FROM courts').get().c;
+  const bookingCount = db.prepare('SELECT COUNT(*) as c FROM bookings').get().c;
+
+  let dbSizeKB = null;
+  try {
+    const stat = fs.statSync(path.join(__dirname, 'tennis.db'));
+    dbSizeKB = Math.round(stat.size / 1024 * 10) / 10;
+  } catch {}
+
+  let pkg = { version: '?' };
+  try { pkg = require('./package.json'); } catch {}
+
+  res.json({
+    app: { name: 'TennisPro Booking', version: pkg.version },
+    server: {
+      uptime:      process.uptime(),
+      nodeVersion: process.version,
+      platform:    `${os.type()} ${os.release()}`,
+      loadAvg:     load.map(l => Math.round(l * 100) / 100),
+      memUsedMB:   toMB(mem.rss),
+      memHeapMB:   toMB(mem.heapUsed),
+      memTotalMB:  toMB(os.totalmem()),
+      memFreeMB:   toMB(os.freemem()),
+      wsClients:   wss.clients.size,
+    },
+    db: { users: userCount, courts: courtCount, bookings: bookingCount, sizeKB: dbSizeKB },
+  });
+});
+
+app.get('/api/changelog', authenticate, (req, res) => {
+  try {
+    const text = fs.readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf8');
+    res.json({ text });
+  } catch {
+    res.json({ text: '# Changelog\n\nNot available.' });
+  }
+});
+
+server.listen(PORT, '0.0.0.0', () =>
   console.log(`Tennis booking running on http://0.0.0.0:${PORT}`)
 );
