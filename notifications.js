@@ -60,8 +60,21 @@ async function sendSMS(to, body) {
 
 // ── Notification helpers ──────────────────────────────────────────────────────
 
+const DAYS_NO   = ['søndag','mandag','tirsdag','onsdag','torsdag','fredag','lørdag'];
+const MONTHS_NO = ['januar','februar','mars','april','mai','juni','juli','august','september','oktober','november','desember'];
+
+function formatDateNo(isoDate) {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const day = DAYS_NO[new Date(y, m - 1, d).getDay()];
+  const dayCapital = day.charAt(0).toUpperCase() + day.slice(1);
+  return `${dayCapital}, ${d}. ${MONTHS_NO[m - 1]} ${y}`;
+}
+
 function formatSlot(booking) {
-  return `${booking.court_name} on ${booking.date} at ${String(booking.start_hour).padStart(2,'0')}:00–${String(booking.end_hour).padStart(2,'0')}:00`;
+  const date  = formatDateNo(booking.date);
+  const start = String(booking.start_hour).padStart(2, '0') + ':00';
+  const end   = String(booking.end_hour).padStart(2, '0') + ':00';
+  return `${booking.court_name} – ${date} kl. ${start}–${end}`;
 }
 
 async function notifyBookingCreated({ email, phone, name }, booking) {
@@ -69,12 +82,12 @@ async function notifyBookingCreated({ email, phone, name }, booking) {
   await Promise.all([
     sendEmail(
       email,
-      'Tennis court booking confirmed',
-      `Hi ${name},\n\nYour booking is confirmed:\n${slot}\n\nSee you on the court!`
+      'Tennisbane – bestilling bekreftet',
+      `Hei ${name},\n\nDin bestilling er bekreftet:\n${slot}\n\nVi sees på banen!`
     ),
     sendSMS(
       phone,
-      `Tennis booking confirmed: ${slot}`
+      `Tennisbane bekreftet: ${slot}`
     ),
   ]);
 }
@@ -84,12 +97,12 @@ async function notifyBookingCancelled({ email, phone, name }, booking) {
   await Promise.all([
     sendEmail(
       email,
-      'Tennis court booking cancelled',
-      `Hi ${name},\n\nYour booking has been cancelled:\n${slot}`
+      'Tennisbane – bestilling kansellert',
+      `Hei ${name},\n\nDin bestilling er kansellert:\n${slot}`
     ),
     sendSMS(
       phone,
-      `Tennis booking cancelled: ${slot}`
+      `Tennisbane kansellert: ${slot}`
     ),
   ]);
 }
