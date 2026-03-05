@@ -825,6 +825,96 @@ input:focus {
 .empty-state .icon { font-size: 2.5rem; display: block; margin-bottom: .6rem; }
 
 
+/* ── Select inputs ──────────────────────────────────────────────────────────── */
+.form-select {
+  width: 100%;
+  padding: .65rem 2.2rem .65rem 1rem;
+  background: var(--bg3);
+  color: var(--text);
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-s);
+  font-size: .925rem;
+  outline: none;
+  min-height: 48px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Arrow icon via background */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .85rem center;
+  transition: border-color var(--fast), box-shadow var(--fast);
+}
+.form-select:focus {
+  background-color: var(--bg2);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-t);
+}
+.form-select:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Edit Booking Modal ──────────────────────────────────────────────────────── */
+#edit-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  display: none; align-items: flex-end; justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+#edit-overlay.active { display: flex; }
+
+#edit-modal {
+  background: var(--bg2);
+  border-radius: var(--r-l) var(--r-l) 0 0;
+  padding: 0 1.5rem calc(1.5rem + env(safe-area-inset-bottom));
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-xl);
+  animation: sheetUp .22s var(--ease);
+}
+
+/* Wider screens: centred card */
+@media (min-width: 480px) {
+  #edit-overlay { align-items: center; padding: 1.5rem; }
+  #edit-modal {
+    border-radius: var(--r-l);
+    max-width: 440px;
+    padding: 1.75rem;
+    animation: modalIn .15s var(--ease);
+  }
+}
+
+.sheet-handle {
+  width: 40px; height: 4px;
+  background: var(--bg4); border-radius: 99px;
+  margin: 1rem auto .75rem;
+}
+@media (min-width: 480px) { .sheet-handle { display: none; } }
+
+.edit-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+.edit-header h3 { font-size: 1rem; font-weight: 700; }
+
+.edit-form { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem; }
+
+.edit-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+  flex-wrap: wrap;
+  padding-top: .75rem;
+  border-top: 1px solid var(--border);
+}
+.edit-actions-right { display: flex; gap: .5rem; margin-left: auto; }
+
+/* Stack vertically on narrow screens */
+@media (max-width: 420px) {
+  .edit-actions { flex-direction: column-reverse; }
+  .edit-actions .btn, .edit-actions-right { width: 100%; }
+  .edit-actions-right { flex-direction: column-reverse; margin-left: 0; }
+  .edit-actions-right .btn { width: 100%; padding: .75rem; }
+}
+
 /* ── 12. Responsive ─────────────────────────────────────────────────────────── */
 
 /* Tablet — sidebar stays, bottom nav hidden */

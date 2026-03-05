@@ -29,6 +29,43 @@
     </div>
   </div>
 
+  <!--
+    Edit booking sheet — static in DOM, shown/hidden via JS.
+    Slides up from bottom on mobile (sheet), centred card on desktop.
+  -->
+  <div id="edit-overlay">
+    <div id="edit-modal">
+      <div class="sheet-handle"></div>
+      <div class="edit-header">
+        <h3 id="edit-title">Edit Booking</h3>
+        <button class="btn-icon" id="edit-close" aria-label="Close">✕</button>
+      </div>
+
+      <div class="edit-form">
+        <div class="form-group">
+          <label for="edit-date">Date</label>
+          <input type="date" id="edit-date">
+        </div>
+        <div class="form-group">
+          <label for="edit-court">Court</label>
+          <select id="edit-court" class="form-select"></select>
+        </div>
+        <div class="form-group">
+          <label for="edit-time">Time</label>
+          <select id="edit-time" class="form-select"></select>
+        </div>
+      </div>
+
+      <div class="edit-actions">
+        <button id="edit-delete" class="btn btn-danger">Delete Booking</button>
+        <div class="edit-actions-right">
+          <button id="edit-cancel-btn" class="btn btn-ghost">Cancel</button>
+          <button id="edit-save" class="btn btn-primary">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

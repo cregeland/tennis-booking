@@ -220,6 +220,129 @@ app.delete('/api/bookings/:id', authenticate, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Edit Booking ──────────────────────────────────────────────────────────────
+// Moves an existing booking to a new court/date/time atomically (delete + insert
+// in a single SQLite transaction so no slot is ever double-booked).
+
+app.put('/api/bookings/:id', authenticate, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+  const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(id);
+  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+
+  if (req.user.role !== 'admin' && booking.user_id !== req.user.id)
+    return res.status(403).json({ error: 'You can only edit your own bookings' });
+
+  const { court_id, date, start_hour } = req.body ?? {};
+  if (!court_id || !date || start_hour === undefined)
+    return res.status(400).json({ error: 'court_id, date, and start_hour required' });
+  if (!isValidDate(date)) return res.status(400).json({ error: 'Invalid date' });
+
+  const h = parseInt(start_hour, 10);
+  if (isNaN(h) || h < 7 || h > 21) return res.status(400).json({ error: 'Invalid time slot (7–21)' });
+
+  if (!db.prepare('SELECT id FROM courts WHERE id = ?').get(court_id))
+    return res.status(400).json({ error: 'Invalid court' });
+
+  const slotTime = new Date(`${date}T${String(h).padStart(2, '0')}:00:00`);
+  if (slotTime < new Date()) return res.status(400).json({ error: 'Cannot book a past time slot' });
+
+  try {
+    // Atomic transaction: remove old slot, claim new slot
+    const move = db.transaction(() => {
+      db.prepare('DELETE FROM bookings WHERE id = ?').run(id);
+      return db.prepare(
+        'INSERT INTO bookings (court_id, user_id, date, start_hour, end_hour) VALUES (?,?,?,?,?)'
+      ).run(court_id, booking.user_id, date, h, h + 1).lastInsertRowid;
+    });
+
+    const newId = move();
+    const updated = db.prepare(`
+      SELECT b.id, b.court_id, b.user_id, b.date, b.start_hour, b.end_hour,
+             u.name AS user_name, c.name AS court_name
+      FROM bookings b JOIN users u ON b.user_id=u.id JOIN courts c ON b.court_id=c.id
+      WHERE b.id = ?
+    `).get(newId);
+    res.json(updated);
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'That slot is already taken' });
+    throw e;
+  }
+});
+
+// ── Calendar Export (ICS) ─────────────────────────────────────────────────────
+// Generates RFC 5545-compliant iCalendar files importable by iOS Calendar,
+// Google Calendar, Outlook, etc.  Uses floating local time (no TZID) which
+// displays correctly when device and server share the same timezone (Norway).
+
+function buildICS(bookings, calName) {
+  const esc  = s => String(s).replace(/[\\;,]/g, c => '\\' + c);
+  const ts   = new Date().toISOString().replace(/[-:]/g,'').replace(/\..+/,'') + 'Z';
+
+  const events = bookings.map(b => {
+    const d = b.date.replace(/-/g, '');
+    const s = String(b.start_hour).padStart(2, '0');
+    const e = String(b.end_hour  ).padStart(2, '0');
+    return [
+      'BEGIN:VEVENT',
+      `UID:booking-${b.id}@tennispro`,
+      `DTSTAMP:${ts}`,
+      `DTSTART:${d}T${s}0000`,
+      `DTEND:${d}T${e}0000`,
+      `SUMMARY:${esc(b.court_name)} – Tennis`,
+      `DESCRIPTION:Bestilling for ${esc(b.user_name)}`,
+      `LOCATION:${esc(b.court_name)}`,
+      'STATUS:CONFIRMED',
+      'END:VEVENT',
+    ].join('\r\n');
+  });
+
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//TennisPro//Court Booking//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    `X-WR-CALNAME:${esc(calName)}`,
+    'X-WR-TIMEZONE:Europe/Oslo',
+    ...events,
+    'END:VCALENDAR',
+  ].join('\r\n');
+}
+
+// Download own upcoming bookings as .ics
+app.get('/api/calendar/mine.ics', authenticate, (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT b.id, b.date, b.start_hour, b.end_hour,
+           u.name AS user_name, c.name AS court_name
+    FROM bookings b JOIN users u ON b.user_id=u.id JOIN courts c ON b.court_id=c.id
+    WHERE b.user_id = ? AND b.date >= ?
+    ORDER BY b.date, b.start_hour
+  `).all(req.user.id, today);
+
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="mine-bestillinger.ics"');
+  res.send(buildICS(rows, `${req.user.name} – Tennisbane`));
+});
+
+// Download ALL upcoming bookings as .ics (admin only)
+app.get('/api/calendar/all.ics', authenticate, requireAdmin, (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = db.prepare(`
+    SELECT b.id, b.date, b.start_hour, b.end_hour,
+           u.name AS user_name, c.name AS court_name
+    FROM bookings b JOIN users u ON b.user_id=u.id JOIN courts c ON b.court_id=c.id
+    WHERE b.date >= ?
+    ORDER BY b.date, b.start_hour
+  `).all(today);
+
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="alle-bestillinger.ics"');
+  res.send(buildICS(rows, 'Alle bestillinger – Tennisbane'));
+});
+
 // ── Admin Routes ─────────────────────────────────────────────────────────────
 
 app.get('/api/admin/users', authenticate, requireAdmin, (req, res) => {

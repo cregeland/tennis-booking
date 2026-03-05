@@ -72,11 +72,27 @@ function fmtDate(d) {
   return `${y}-${m}-${dd}`;
 }
 
-/** Formats an integer hour (7–21) as "7:00 AM" / "1:00 PM". */
+/** Formats an integer hour as 24-hour "HH:00" (Norwegian standard). */
 function fmtHour(h) {
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12  = h % 12 || 12;
-  return `${h12}:00 ${ampm}`;
+  return `${String(h).padStart(2, '0')}:00`;
+}
+
+/**
+ * Formats a YYYY-MM-DD string as Norwegian short date: "06.03.2026".
+ * Used in table cells and compact displays.
+ */
+function fmtDateNO(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d.toLocaleDateString('nb-NO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+/**
+ * Formats a YYYY-MM-DD string as full Norwegian long date: "fredag 6. mars 2026".
+ * Used as the scheduler day heading.
+ */
+function fmtDateLongNO(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d.toLocaleDateString('nb-NO', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 /**
@@ -129,15 +145,16 @@ async function apiFetch(url, opts = {}) {
 /** Typed API methods — all return Promises. */
 const api = {
   // Auth
-  login:   (email, password)           => apiFetch('/api/login',  { method: 'POST', body: JSON.stringify({ email, password }) }),
-  logout:  ()                          => apiFetch('/api/logout',  { method: 'POST' }),
-  me:      ()                          => apiFetch('/api/me'),
+  login:   (email, password)              => apiFetch('/api/login',  { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout:  ()                             => apiFetch('/api/logout',  { method: 'POST' }),
+  me:      ()                             => apiFetch('/api/me'),
 
   // Data
-  courts:  ()                          => apiFetch('/api/courts'),
-  bookings:(date)                      => apiFetch(`/api/bookings?date=${date}`),
-  book:    (court_id, date, start_hour)=> apiFetch('/api/bookings', { method: 'POST', body: JSON.stringify({ court_id, date, start_hour }) }),
-  cancel:  (id)                        => apiFetch(`/api/bookings/${id}`, { method: 'DELETE' }),
+  courts:  ()                             => apiFetch('/api/courts'),
+  bookings:(date)                         => apiFetch(`/api/bookings?date=${date}`),
+  book:    (court_id, date, start_hour)   => apiFetch('/api/bookings', { method: 'POST', body: JSON.stringify({ court_id, date, start_hour }) }),
+  edit:    (id, court_id, date, start_hour) => apiFetch(`/api/bookings/${id}`, { method: 'PUT',  body: JSON.stringify({ court_id, date, start_hour }) }),
+  cancel:  (id)                           => apiFetch(`/api/bookings/${id}`, { method: 'DELETE' }),
 
   // Admin-only
   adminUsers:    () => apiFetch('/api/admin/users'),
@@ -224,6 +241,143 @@ const Modal = (() => {
   };
 })();
 
+
+// ── 6b. Edit Booking Modal ───────────────────────────────────────────────────
+/**
+ * Singleton controller for the edit-booking bottom sheet.
+ * Like Modal, event listeners are wired once at init.
+ * EditModal.open(booking) resolves with the updated booking or null (closed/deleted).
+ */
+const EditModal = (() => {
+  let onSave   = null; // called with (court_id, date, start_hour)
+  let onDelete = null; // called with ()
+  let onClose  = null; // called with ()
+
+  const overlay  = document.getElementById('edit-overlay');
+  const dateEl   = document.getElementById('edit-date');
+  const courtEl  = document.getElementById('edit-court');
+  const timeEl   = document.getElementById('edit-time');
+  const saveBtn  = document.getElementById('edit-save');
+  const delBtn   = document.getElementById('edit-delete');
+  const closeBtn = document.getElementById('edit-close');
+  const cancelBtn= document.getElementById('edit-cancel-btn');
+  const titleEl  = document.getElementById('edit-title');
+
+  function close() {
+    overlay.classList.remove('active');
+    onSave = onDelete = onClose = null;
+  }
+
+  // Populate available time slots whenever date changes
+  async function refreshTimes(currentCourtId, currentHour, currentDate) {
+    const selDate  = dateEl.value;
+    const selCourt = parseInt(courtEl.value, 10);
+    if (!selDate) return;
+
+    timeEl.innerHTML = '<option disabled>Loading…</option>';
+    try {
+      const bookings = await api.bookings(selDate);
+      // Build set of taken slots for the selected court (excluding current booking's slot on same date)
+      const taken = new Set(
+        bookings
+          .filter(b => b.court_id === selCourt && !(b.start_hour === currentHour && selDate === currentDate))
+          .map(b => b.start_hour)
+      );
+      const now  = new Date();
+      timeEl.innerHTML = HOURS.map(h => {
+        const slotTime = new Date(`${selDate}T${String(h).padStart(2,'0')}:00:00`);
+        const past     = slotTime < now;
+        const busy     = taken.has(h);
+        const disabled = past || busy;
+        const label    = `${fmtHour(h)}${busy ? ' (opptatt)' : past ? ' (passert)' : ''}`;
+        return `<option value="${h}" ${disabled ? 'disabled' : ''} ${h === currentHour && selDate === currentDate ? 'selected' : ''}>${label}</option>`;
+      }).join('');
+      // Default-select first available slot if current is not available
+      if (timeEl.value === '') {
+        const first = timeEl.querySelector('option:not([disabled])');
+        if (first) first.selected = true;
+      }
+    } catch {
+      timeEl.innerHTML = '<option disabled>Error loading slots</option>';
+    }
+  }
+
+  // Re-fetch times when date or court changes
+  dateEl.addEventListener('change',  () => refreshTimes(null, null, null));
+  courtEl.addEventListener('change', () => refreshTimes(null, null, null));
+
+  saveBtn.addEventListener('click', () => {
+    const court    = parseInt(courtEl.value, 10);
+    const date     = dateEl.value;
+    const startHour= parseInt(timeEl.value, 10);
+    if (!court || !date || isNaN(startHour)) return;
+    onSave?.(court, date, startHour);
+    close();
+  });
+
+  delBtn.addEventListener('click', () => {
+    onDelete?.();
+    close();
+  });
+
+  const dismiss = () => { onClose?.(); close(); };
+  closeBtn .addEventListener('click', dismiss);
+  cancelBtn.addEventListener('click', dismiss);
+  overlay  .addEventListener('click', e => { if (e.target === overlay) dismiss(); });
+
+  document.addEventListener('keydown', e => {
+    if (overlay.classList.contains('active') && e.key === 'Escape') dismiss();
+  });
+
+  return {
+    /**
+     * Opens the edit sheet pre-filled with the given booking.
+     * Returns a Promise resolving to:
+     *   { action:'save', court_id, date, start_hour } — user saved
+     *   { action:'delete' }                           — user deleted
+     *   null                                          — user dismissed
+     */
+    open(booking) {
+      titleEl.textContent = `Edit – ${booking.court_name}`;
+
+      // Fill court dropdown
+      courtEl.innerHTML = S.courts.map(c =>
+        `<option value="${c.id}" ${c.id === booking.court_id ? 'selected' : ''}>${escHtml(c.name)}</option>`
+      ).join('');
+
+      // Fill date
+      dateEl.value = booking.date;
+
+      // Fill time slots (async)
+      refreshTimes(booking.court_id, booking.start_hour, booking.date);
+
+      overlay.classList.add('active');
+      dateEl.focus();
+
+      return new Promise(resolve => {
+        onSave   = (court_id, date, start_hour) => resolve({ action: 'save', court_id, date, start_hour });
+        onDelete = ()                            => resolve({ action: 'delete' });
+        onClose  = ()                            => resolve(null);
+      });
+    },
+  };
+})();
+
+// ── 6c. Calendar Export ──────────────────────────────────────────────────────
+/**
+ * Triggers download of user's upcoming bookings as a .ics file.
+ * On iOS, Safari will prompt to open the file in Calendar.app automatically.
+ */
+function exportCalendar(adminAll = false) {
+  const url = adminAll ? '/api/calendar/all.ics' : '/api/calendar/mine.ics';
+  // Create a temporary link and click it — works on all browsers including iOS Safari
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = adminAll ? 'alle-bestillinger.ics' : 'mine-bestillinger.ics';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
 
 // ── 7. Dark Mode ─────────────────────────────────────────────────────────────
 
@@ -500,13 +654,14 @@ function renderMiniCal() {
 
   const y           = S.calDate.getFullYear();
   const m           = S.calDate.getMonth();
-  const firstDay    = new Date(y, m, 1).getDay();   // 0=Sun
+  // Norwegian weeks start on Monday: shift getDay() so Mon=0, Sun=6
+  const firstDay    = (new Date(y, m, 1).getDay() + 6) % 7;
   const daysInMonth = new Date(y, m + 1, 0).getDate();
-  const monthLabel  = S.calDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+  const monthLabel  = S.calDate.toLocaleString('nb-NO', { month: 'long', year: 'numeric' });
   const tStr        = todayStr();
 
-  // Day-of-week header labels
-  const dayLabels = ['Su','Mo','Tu','We','Th','Fr','Sa']
+  // Norwegian abbreviated day names starting Monday
+  const dayLabels = ['Ma','Ti','On','To','Fr','Lø','Sø']
     .map(d => `<div class="mini-cal-day-label">${d}</div>`)
     .join('');
 
@@ -574,11 +729,8 @@ function renderScheduler() {
   const content = document.getElementById('content');
   if (!content) return;
 
-  // Human-readable date heading
-  const selDateObj = new Date(S.selDate + 'T12:00:00');
-  const dateLabel  = selDateObj.toLocaleDateString('default', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-  });
+  // Norwegian long date heading e.g. "fredag 6. mars 2026"
+  const dateLabel = fmtDateLongNO(S.selDate);
 
   // Build a fast lookup: bookingMap[courtId][hour] = booking object
   const bookingMap = {};
@@ -673,7 +825,11 @@ function renderScheduler() {
         <div class="legend-item"><div class="legend-dot others"></div> Taken</div>
       </div>
 
-      <button class="btn btn-ghost btn-sm" id="goto-today">Today</button>
+      <div style="display:flex;gap:.4rem;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="goto-today">Today</button>
+        <button class="btn btn-ghost btn-sm" id="export-cal" title="Export bookings to calendar">📅 Export</button>
+        ${S.user?.role === 'admin' ? `<button class="btn btn-ghost btn-sm" id="export-cal-all" title="Export all bookings">📅 All</button>` : ''}
+      </div>
     </div>
 
     <div class="scheduler-wrap">
@@ -695,6 +851,9 @@ function renderScheduler() {
     renderSidebar();
     renderScheduler();
   });
+
+  document.getElementById('export-cal').addEventListener('click', () => exportCalendar(false));
+  document.getElementById('export-cal-all')?.addEventListener('click', () => exportCalendar(true));
 
   // ── Grid: event delegation ────────────────────────────────────────────────
   // One listener on the grid handles all slot and button clicks.
@@ -731,29 +890,36 @@ function renderScheduler() {
       }
     }
 
-    // ── Cancel a booking ──────────────────────────────────────────────────
-    // On touch: fires when user taps the always-visible ✕ button.
-    // On desktop: fires when user clicks the slot or the ✕ (shown on hover).
+    // ── Edit / delete own booking ─────────────────────────────────────────
+    // Opens the edit sheet where user can move or delete the booking.
     if (slot.classList.contains('mine')) {
       const id      = parseInt(slot.dataset.id, 10);
       const booking = S.bookings.find(b => b.id === id);
       if (!booking) return;
 
-      const confirmed = await Modal.ask(
-        'Cancel Booking',
-        `Cancel ${booking.court_name} on ${booking.date} at ${fmtHour(booking.start_hour)}?`
-      );
-      if (!confirmed) return;
+      const result = await EditModal.open(booking);
+      if (!result) return; // dismissed with no action
 
-      try {
-        await api.cancel(id);
-        toast('Booking cancelled');
-        await loadBookings();
-        renderSidebar();
-        renderScheduler();
-      } catch (err) {
-        toast(err.message, 'error');
+      if (result.action === 'delete') {
+        const ok = await Modal.ask('Delete Booking',
+          `Remove ${booking.court_name} on ${fmtDateNO(booking.date)} at ${fmtHour(booking.start_hour)}?`);
+        if (!ok) return;
+        try {
+          await api.cancel(id);
+          toast('Booking deleted');
+        } catch (err) { toast(err.message, 'error'); return; }
       }
+
+      if (result.action === 'save') {
+        try {
+          await api.edit(id, result.court_id, result.date, result.start_hour);
+          toast('Booking updated');
+        } catch (err) { toast(err.message, 'error'); return; }
+      }
+
+      await loadBookings();
+      renderSidebar();
+      renderScheduler();
     }
   });
 
@@ -887,7 +1053,7 @@ function buildAdminPanel() {
 
   const rows = S.adminData.bookings.map(b => `
     <tr>
-      <td>${escHtml(b.date)}</td>
+      <td>${fmtDateNO(b.date)}</td>
       <td>${fmtHour(b.start_hour)}</td>
       <td>${escHtml(b.court_name)}</td>
       <td>${escHtml(b.user_name)}</td>
